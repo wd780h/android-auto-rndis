@@ -3,4 +3,4 @@ name=br77 same-LAN tether
 version=v0.1.0
 versionCode=1
 author=br77
-description=Experimental. Pin USB rndis to 192.168.77.1/24. The Wi-Fi hotspot stays with the system. Tested on one arm64 phone. Removes tether BPF on the USB iface and opens the filter policy so replies can return.
+description=Experimental. Pin USB rndis to 192.168.77.1/24. Does not bridge the Wi-Fi hotspot or move it onto that subnet. Tested on one arm64 phone. Removes tether BPF on the USB iface and opens the filter policy so replies can return.

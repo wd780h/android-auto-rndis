@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Fixed subnet on the USB gadget only. The Wi-Fi hotspot stays with the system.
+# Fixed subnet on the USB gadget. The Wi-Fi hotspot is not bridged and keeps the system prefix.
 # Started by Magisk/KernelSU service.sh. Argument: module directory.
 MODDIR=$1
 [ -n "$MODDIR" ] || MODDIR=$(dirname "$0")
