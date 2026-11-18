@@ -24,7 +24,7 @@ Magisk、KernelSU、SukiSU 都可以装这个 zip。后两者会执行里面的 
 
 ## 安装
 
-仓库里带有编好的 `br77d`（arm64）和刷机包 `br77.zip`。重新打包：
+仓库里带有编好的 `br77d`（arm64）和模块包 `br77.zip`。重新打包：
 
 ```sh
 zip -r br77.zip \
@@ -32,7 +32,7 @@ zip -r br77.zip \
   config.default br77-loop.sh br77d README.md LICENSE
 ```
 
-在 Magisk 里刷入 `br77.zip`，然后重启。KernelSU / SukiSU 用「安装模块」选同一个 zip。
+在 Magisk、KernelSU 或 SukiSU 里选「安装模块」，选 `br77.zip`，然后重启。这不是系统刷机包。
 
 如果以前手动放过 `/data/adb/service.d/br77.sh`，安装时会把它改名为 `br77.sh.bak`。
 
