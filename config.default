@@ -7,13 +7,13 @@ PREFIX=24
 DHCP_START=192.168.77.10
 DHCP_END=192.168.77.200
 
-# auto: USB gadget (rndis/usb/ncm), AP interfaces reported by iw, and
-# softap/ap/ap_br/bt-pan names. A space-separated list forces those names only.
+# auto: the first UP rndis*, usb*, or ncm* interface. The Wi-Fi hotspot is
+# left alone. A space-separated list forces those names only.
 PORTS=auto
 
 # 1: if a cable is configured and the gadget is not already rndis or ncm,
 # switch to USB tethering. adb stays. 0: do not change USB mode.
 AUTO_USB=1
 
-# 1: advertise the current upstream global /64 on the bridge.
+# 1: advertise the current upstream global /64 on the USB interface.
 IPV6=1

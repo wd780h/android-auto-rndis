@@ -9,6 +9,12 @@ LOG=/data/adb/br77/br77.log
 DAEMON=$MODDIR/br77d
 STATE=/data/adb/br77/daemon.args
 mkdir -p /data/adb/br77
+if [ -f "$LOG" ]; then
+  bytes=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+  if [ "$bytes" -gt 262144 ]; then
+    mv "$LOG" "$LOG.1" 2>/dev/null
+  fi
+fi
 exec >>"$LOG" 2>&1
 echo "=== br77 start $(date) ==="
 
@@ -126,14 +132,14 @@ open_firewall() {
   ip6tables -C FORWARD -o "$BRIDGE" -j ACCEPT 2>/dev/null \
     || ip6tables -I FORWARD 1 -o "$BRIDGE" -j ACCEPT
   if iptables -S tetherctrl_FORWARD >/dev/null 2>&1; then
-    iptables -D tetherctrl_FORWARD -j DROP 2>/dev/null
+    iptables -D tetherctrl_FORWARD -j DROP 2>/dev/null || true
     iptables -C tetherctrl_FORWARD -i "$BRIDGE" -j RETURN 2>/dev/null \
       || iptables -I tetherctrl_FORWARD 1 -i "$BRIDGE" -j RETURN
     iptables -C tetherctrl_FORWARD -o "$BRIDGE" -j RETURN 2>/dev/null \
       || iptables -I tetherctrl_FORWARD 1 -o "$BRIDGE" -j RETURN
   fi
   if ip6tables -S tetherctrl_FORWARD >/dev/null 2>&1; then
-    ip6tables -D tetherctrl_FORWARD -j DROP 2>/dev/null
+    ip6tables -D tetherctrl_FORWARD -j DROP 2>/dev/null || true
     ip6tables -C tetherctrl_FORWARD -i "$BRIDGE" -j RETURN 2>/dev/null \
       || ip6tables -I tetherctrl_FORWARD 1 -i "$BRIDGE" -j RETURN
     ip6tables -C tetherctrl_FORWARD -o "$BRIDGE" -j RETURN 2>/dev/null \
@@ -188,6 +194,9 @@ ensure_nat() {
     for proto in udp tcp; do
       iptables -t nat -C PREROUTING -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination 8.8.8.8:53 2>/dev/null \
         || iptables -t nat -I PREROUTING 1 -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination 8.8.8.8:53
+      while iptables -t nat -D PREROUTING -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination 127.0.0.1:53 2>/dev/null; do
+        :
+      done
     done
   fi
 }
@@ -312,7 +321,7 @@ daemon_args() {
     done
     [ -n "$dns" ] || dns=8.8.8.8
   fi
-  echo "--if $BRIDGE --ifindex $idx --addr $ADDR --start $DHCP_START --end $DHCP_END --dns $dns --prefix ${pref:-"-"} --mac $mac"
+  echo "--if $BRIDGE --ifindex $idx --addr $ADDR --start $DHCP_START --end $DHCP_END --dns $dns --prefix ${pref:-"-"} --mac $mac --leases /data/adb/br77/leases"
 }
 
 ensure_daemon() {
@@ -338,7 +347,7 @@ ensure_daemon() {
 # pipe down. The netdev stays; we bring it back up and bridge it ourselves.
 release_system_tether() {
   ifc=$1
-  dumpsys tethering 2>/dev/null | grep -q "$ifc - TetheredState" || return 0
+  dumpsys tethering 2>/dev/null | grep -q "$ifc - TetheredState - lastError" || return 0
   service call tethering 2 s16 "$ifc" s16 com.android.shell s16 br77 null >/dev/null 2>&1
   ip link set "$ifc" up
   echo "untether $ifc"
@@ -352,7 +361,7 @@ apply() {
   # One USB gadget. Leave any Wi-Fi AP alone, and remove the old bridge.
   ifc=${want# }
   ifc=${ifc%% *}
-  ip link del br77 2>/dev/null && echo "del br77"
+  ip link del br77 2>/dev/null && echo "del br77" || true
   BRIDGE=$ifc
   release_system_tether "$ifc"
   ip link set "$ifc" nomaster 2>/dev/null
@@ -389,13 +398,20 @@ usb_configured() {
   [ -n "$st" ] && [ "$st" != none ]
 }
 
-usb_auto() {
-  [ "$AUTO_USB" = 1 ] || return 0
-  usb_configured || return 0
-  fn=$(getprop sys.usb.state)
-  case "$fn" in
-    *rndis*|*ncm*) return 0 ;;
-  esac
+# 0 when an rndis/usb/ncm iface exists and none of them has a carrier.
+gadget_carrier_down() {
+  saw=0
+  for ifc in /sys/class/net/rndis* /sys/class/net/usb* /sys/class/net/ncm*; do
+    [ -r "$ifc/carrier" ] || continue
+    saw=1
+    [ "$(cat "$ifc/carrier" 2>/dev/null)" = 1 ] && return 1
+  done
+  [ "$saw" = 1 ]
+}
+
+usb_kick() {
+  fn=$1
+  why=$2
   now=$(date +%s)
   last=0
   [ -f /data/adb/br77/usb-try.ts ] && last=$(cat /data/adb/br77/usb-try.ts)
@@ -403,8 +419,36 @@ usb_auto() {
     return 0
   fi
   echo "$now" > /data/adb/br77/usb-try.ts
-  echo "usb fn=$fn -> rndis"
+  echo "usb fn=$fn -> rndis ($why)"
   setsid svc usb setFunctions rndis </dev/null >/data/adb/br77/usb-once.log 2>&1 &
+}
+
+usb_auto() {
+  [ "$AUTO_USB" = 1 ] || return 0
+  usb_configured || return 0
+  fn=$(getprop sys.usb.state)
+  case "$fn" in
+    *rndis*|*ncm*)
+      if gadget_carrier_down; then
+        now=$(date +%s)
+        since=0
+        [ -f /data/adb/br77/carrier-down.ts ] && since=$(cat /data/adb/br77/carrier-down.ts)
+        if [ "$since" -eq 0 ]; then
+          echo "$now" > /data/adb/br77/carrier-down.ts
+          return 0
+        fi
+        if [ $((now - since)) -ge 15 ]; then
+          usb_kick "$fn" "carrier down"
+          rm -f /data/adb/br77/carrier-down.ts
+        fi
+      else
+        rm -f /data/adb/br77/carrier-down.ts
+      fi
+      return 0
+      ;;
+  esac
+  rm -f /data/adb/br77/carrier-down.ts
+  usb_kick "$fn" "not rndis"
 }
 
 while true; do

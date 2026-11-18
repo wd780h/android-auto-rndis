@@ -10,6 +10,7 @@ typedef long i64;
 #define SYS_read 63
 #define SYS_write 64
 #define SYS_close 57
+#define SYS_openat 56
 #define SYS_exit 93
 #define SYS_nanosleep 101
 #define SYS_socket 198
@@ -199,28 +200,128 @@ struct lease {
 static struct lease leases[MAX_LEASE];
 static u32 next_host;
 static u32 host_lo, host_hi, server_ip, netmask, dns_ip;
+static const char *lease_path;
+
+static int xopen(const char *path, int flags) {
+  return (int)syscall(SYS_openat, -100, (i64)path, flags, 0644, 0, 0);
+}
 
 static int mac_eq(const u8 *a, const u8 *b) {
   for (int i = 0; i < 6; i++) if (a[i] != b[i]) return 0;
   return 1;
 }
 
+static int ip_taken(u32 ip) {
+  for (int i = 0; i < MAX_LEASE; i++)
+    if (leases[i].used && leases[i].ip == ip) return 1;
+  return 0;
+}
+
+static void put_hex2(char *p, u8 v) {
+  const char *h = "0123456789abcdef";
+  p[0] = h[v >> 4];
+  p[1] = h[v & 0xf];
+}
+
+static void put_dec(char *p, int *n, u32 v) {
+  char tmp[10];
+  int i = 0;
+  if (v == 0) tmp[i++] = '0';
+  while (v) { tmp[i++] = (char)('0' + (v % 10)); v /= 10; }
+  while (i > 0) p[(*n)++] = tmp[--i];
+}
+
+static void save_leases(void) {
+  if (!lease_path || !lease_path[0]) return;
+  int fd = xopen(lease_path, 1 | 64 | 512);
+  if (fd < 0) return;
+  for (int i = 0; i < MAX_LEASE; i++) {
+    if (!leases[i].used) continue;
+    char line[64];
+    int n = 0;
+    for (int k = 0; k < 6; k++) {
+      put_hex2(line + n, leases[i].mac[k]);
+      n += 2;
+      if (k < 5) line[n++] = ':';
+    }
+    line[n++] = ' ';
+    u32 ip = leases[i].ip;
+    put_dec(line, &n, (ip >> 24) & 0xff);
+    line[n++] = '.';
+    put_dec(line, &n, (ip >> 16) & 0xff);
+    line[n++] = '.';
+    put_dec(line, &n, (ip >> 8) & 0xff);
+    line[n++] = '.';
+    put_dec(line, &n, ip & 0xff);
+    line[n++] = '\n';
+    xwrite(fd, line, n);
+  }
+  syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+}
+
+static void load_leases(void) {
+  if (!lease_path || !lease_path[0]) return;
+  int fd = xopen(lease_path, 0);
+  if (fd < 0) return;
+  char buf[8192];
+  int n = (int)syscall(SYS_read, fd, (i64)buf, sizeof buf, 0, 0, 0);
+  syscall(SYS_close, fd, 0, 0, 0, 0, 0);
+  if (n <= 0) return;
+  int i = 0;
+  while (i < n) {
+    int start = i;
+    while (i < n && buf[i] != '\n') i++;
+    buf[i] = 0;
+    char *sp = buf + start;
+    while (*sp && *sp != ' ') sp++;
+    if (*sp == ' ') {
+      *sp = 0;
+      u8 mac[6];
+      u32 ip = 0;
+      if (parse_mac(buf + start, mac) && parse_v4(sp + 1, &ip)) {
+        u32 host = ip & 0xffu;
+        if (host >= host_lo && host <= host_hi && !ip_taken(ip)) {
+          for (int s = 0; s < MAX_LEASE; s++) {
+            if (leases[s].used) continue;
+            leases[s].used = 1;
+            for (int k = 0; k < 6; k++) leases[s].mac[k] = mac[k];
+            leases[s].ip = (server_ip & netmask) | host;
+            break;
+          }
+        }
+      }
+    }
+    if (i < n) i++;
+  }
+  u32 nxt = host_lo;
+  for (int s = 0; s < MAX_LEASE; s++) {
+    if (!leases[s].used) continue;
+    u32 host = leases[s].ip & 0xffu;
+    if (host >= nxt) nxt = host + 1;
+  }
+  next_host = (nxt > host_hi) ? host_lo : nxt;
+}
+
 static u32 lease_for(const u8 mac[6]) {
   for (int i = 0; i < MAX_LEASE; i++) {
     if (leases[i].used && mac_eq(leases[i].mac, mac)) return leases[i].ip;
   }
-  if (next_host > host_hi) next_host = host_lo;
-  u32 ip = (server_ip & 0xffffff00u) | next_host;
-  /* server is .1; hosts are start..end in the last octet. Assumes a /24. */
-  ip = (server_ip & netmask) | next_host;
-  for (int i = 0; i < MAX_LEASE; i++) {
-    if (!leases[i].used) {
-      leases[i].used = 1;
-      for (int k = 0; k < 6; k++) leases[i].mac[k] = mac[k];
-      leases[i].ip = ip;
-      next_host++;
-      if (next_host > host_hi) next_host = host_lo;
-      return ip;
+  int span = (int)(host_hi - host_lo + 1);
+  for (int n = 0; n < span; n++) {
+    if (next_host > host_hi) next_host = host_lo;
+    u32 host = next_host;
+    next_host++;
+    if (next_host > host_hi) next_host = host_lo;
+    u32 ip = (server_ip & netmask) | host;
+    if (ip_taken(ip)) continue;
+    for (int i = 0; i < MAX_LEASE; i++) {
+      if (!leases[i].used) {
+        leases[i].used = 1;
+        for (int k = 0; k < 6; k++) leases[i].mac[k] = mac[k];
+        leases[i].ip = ip;
+        save_leases();
+        return ip;
+      }
     }
   }
   return (server_ip & netmask) | host_lo;
@@ -401,7 +502,9 @@ int main(int argc, char **argv) {
   for (int i = 1; i + 1 < argc; i++) {
     if (str_eq(argv[i], "--prefix")) pref_txt = argv[i + 1];
     if (str_eq(argv[i], "--mac")) mac_txt = argv[i + 1];
+    if (str_eq(argv[i], "--leases")) lease_path = argv[i + 1];
   }
+  load_leases();
   u8 prefix[16], mac[6];
   int do_v6 = 0;
   if (pref_txt && mac_txt && !str_eq(pref_txt, "-") && parse_v6(pref_txt, prefix) && parse_mac(mac_txt, mac))
