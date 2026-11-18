@@ -4,7 +4,7 @@
 
 只在一台 POCO F5（`23049PCD8G`，Android 15，SukiSU Ultra，arm64）上测过。那次测试里，电脑拿到 `192.168.77.11`，手机能 ping 通这台电脑，电脑查 `192.168.77.1` 的 DNS 能解析。IPv6 路由通告已经从 `rndis0` 发出，使用运营商的 `/64`；客户端是否拿到全球地址取决于它自己的 SLAAC。
 
-`AUTO_USB=1` 时，USB 处于已连接状态且当前功能里没有 `rndis`/`ncm`，脚本会调用 `svc usb setFunctions rndis`。这台手机上 adb 仍然留着。系统若把 `rndis0` 标成自己的网段，脚本会解开这次共享，再把 `192.168.77.1/24` 直接配在 `rndis0` 上。
+`AUTO_USB=1` 时，电脑插上并完成枚举（UDC 为 `configured`，或 `android0` 为 `CONFIGURED`/`CONNECTED`）且当前功能里没有 `rndis`/`ncm`，脚本会调用 `svc usb setFunctions rndis`。仅充电时小米经常不把 `android0` 标成已连接，所以以 UDC 为准。这台手机上 adb 仍然留着。没插电脑时不会切。系统若把 `rndis0` 标成自己的网段，脚本会解开这次共享，再把 `192.168.77.1/24` 直接配在 `rndis0` 上。
 
 Magisk、KernelSU、SukiSU 都可以装这个 zip。后两者会执行里面的 `service.sh`。
 

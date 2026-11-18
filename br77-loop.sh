@@ -398,6 +398,17 @@ usb_configured() {
   [ -n "$st" ] && [ "$st" != none ]
 }
 
+# A computer enumerates the gadget. A dumb charger usually stops before this.
+# Xiaomi charge-only can leave android0 DISCONNECTED while the UDC is already
+# configured, so the plug-in check has to look here too.
+host_present() {
+  for d in /sys/class/udc/*; do
+    [ -r "$d/state" ] || continue
+    [ "$(cat "$d/state" 2>/dev/null)" = configured ] && return 0
+  done
+  usb_configured
+}
+
 # 0 when an rndis/usb/ncm iface exists and none of them has a carrier.
 gadget_carrier_down() {
   saw=0
@@ -425,7 +436,7 @@ usb_kick() {
 
 usb_auto() {
   [ "$AUTO_USB" = 1 ] || return 0
-  usb_configured || return 0
+  host_present || return 0
   fn=$(getprop sys.usb.state)
   case "$fn" in
     *rndis*|*ncm*)
