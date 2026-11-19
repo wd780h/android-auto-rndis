@@ -181,24 +181,63 @@ ensure_nat() {
   if [ -n "$mark" ]; then
     echo 1 > /proc/sys/net/ipv4/conf/all/route_localnet
     echo 1 > /proc/sys/net/ipv4/conf/"$BRIDGE"/route_localnet 2>/dev/null
+    set_dns_dnat 127.0.0.1
     for proto in udp tcp; do
       iptables -t mangle -C PREROUTING -i "$BRIDGE" -p "$proto" --dport 53 -j MARK --set-mark "$mark" 2>/dev/null \
         || iptables -t mangle -I PREROUTING 1 -i "$BRIDGE" -p "$proto" --dport 53 -j MARK --set-mark "$mark"
-      iptables -t nat -C PREROUTING -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination 127.0.0.1:53 2>/dev/null \
-        || iptables -t nat -I PREROUTING 1 -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination 127.0.0.1:53
-      while iptables -t nat -D PREROUTING -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination 8.8.8.8:53 2>/dev/null; do
-        :
-      done
     done
   else
-    for proto in udp tcp; do
-      iptables -t nat -C PREROUTING -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination 8.8.8.8:53 2>/dev/null \
-        || iptables -t nat -I PREROUTING 1 -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination 8.8.8.8:53
-      while iptables -t nat -D PREROUTING -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination 127.0.0.1:53 2>/dev/null; do
-        :
-      done
-    done
+    set_dns_dnat "$(carrier_dns4)"
   fi
+}
+
+# IPv4 resolver on the current upstream, from netd. net.dns1 is empty on this phone.
+carrier_dns4() {
+  up=$(route_dev -4 1.1.1.1)
+  [ -n "$up" ] || return 0
+  [ "$up" = "$BRIDGE" ] && return 0
+  now=$(date +%s)
+  cache=/data/adb/br77/dns4
+  if [ -f "$cache" ]; then
+    read -r ts iface ip < "$cache"
+    if [ "$iface" = "$up" ] && [ -n "$ip" ] && [ $((now - ts)) -lt 20 ]; then
+      echo "$ip"
+      return 0
+    fi
+  fi
+  ip=$(dumpsys dnsresolver 2>/dev/null | awk -v iface="$up" '
+    /^NetId:/ { n = 0 }
+    /^    [0-9]/ {
+      ip = $1
+      if (ip ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/) saved[++n] = ip
+    }
+    index($0, "Interface names:") && index($0, "[" iface "]") && n > 0 {
+      print saved[1]
+      exit
+    }')
+  if [ -n "$ip" ]; then
+    echo "$now $up $ip" > "$cache"
+    echo "$ip"
+  fi
+}
+
+# Replace every port-53 DNAT on the USB iface with this one destination.
+set_dns_dnat() {
+  dst=$1
+  [ -n "$dst" ] || return 0
+  for proto in udp tcp; do
+    iptables -t nat -C PREROUTING -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination "$dst:53" 2>/dev/null \
+      && continue
+    iptables -t nat -S PREROUTING 2>/dev/null | sed -n 's/^-A PREROUTING //p' | while read -r rule; do
+      case "$rule" in
+        -i\ "$BRIDGE"\ -p\ "$proto"\ *--dport\ 53\ *)
+          # shellcheck disable=SC2086
+          iptables -t nat -D PREROUTING $rule 2>/dev/null
+          ;;
+      esac
+    done
+    iptables -t nat -I PREROUTING 1 -i "$BRIDGE" -p "$proto" --dport 53 -j DNAT --to-destination "$dst:53"
+  done
 }
 
 phone_dns_mark() {
@@ -312,14 +351,11 @@ daemon_args() {
   if [ -n "$(phone_dns_mark)" ]; then
     dns=$ADDR
   else
-    dns=""
-    for p in net.dns1 net.dns2; do
-      cand=$(getprop "$p" 2>/dev/null)
-      case "$cand" in
-        [0-9]*.[0-9]*.[0-9]*.[0-9]*) dns=$cand; break ;;
-      esac
-    done
-    [ -n "$dns" ] || dns=8.8.8.8
+    dns=$(carrier_dns4)
+    if [ -z "$dns" ] && [ -f "$STATE" ]; then
+      dns=$(sed -n 's/.*--dns \([^ ]*\).*/\1/p' "$STATE")
+    fi
+    [ -n "$dns" ] || return 0
   fi
   echo "--if $BRIDGE --ifindex $idx --addr $ADDR --start $DHCP_START --end $DHCP_END --dns $dns --prefix ${pref:-"-"} --mac $mac --leases /data/adb/br77/leases"
 }
