@@ -187,15 +187,20 @@ ensure_nat() {
         || iptables -t mangle -I PREROUTING 1 -i "$BRIDGE" -p "$proto" --dport 53 -j MARK --set-mark "$mark"
     done
   else
-    set_dns_dnat "$(carrier_dns4)"
+    set_dns_dnat "$(forward_dns4)"
   fi
 }
 
-# IPv4 resolver on the current upstream, from netd. net.dns1 is empty on this phone.
-carrier_dns4() {
+# One UDP query. Empty output means this server did not answer in time.
+dns_replies() {
+  printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' \
+    | toybox timeout 1 toybox nc -u -n -w 1 "$1" 53 2>/dev/null | wc -c
+}
+
+# Carrier resolver when it answers. Otherwise 119.29.29.29.
+forward_dns4() {
   up=$(route_dev -4 1.1.1.1)
-  [ -n "$up" ] || return 0
-  [ "$up" = "$BRIDGE" ] && return 0
+  [ -n "$up" ] || up=-
   now=$(date +%s)
   cache=/data/adb/br77/dns4
   if [ -f "$cache" ]; then
@@ -205,7 +210,22 @@ carrier_dns4() {
       return 0
     fi
   fi
-  ip=$(dumpsys dnsresolver 2>/dev/null | awk -v iface="$up" '
+  ip=$(carrier_dns4)
+  if [ -n "$ip" ]; then
+    n=$(dns_replies "$ip")
+    [ "${n:-0}" -gt 0 ] || ip=""
+  fi
+  [ -n "$ip" ] || ip=119.29.29.29
+  echo "$now $up $ip" > "$cache"
+  echo "$ip"
+}
+
+# IPv4 resolver on the current upstream, from netd. net.dns1 is empty on this phone.
+carrier_dns4() {
+  up=$(route_dev -4 1.1.1.1)
+  [ -n "$up" ] || return 0
+  [ "$up" = "$BRIDGE" ] && return 0
+  dumpsys dnsresolver 2>/dev/null | awk -v iface="$up" '
     /^NetId:/ { n = 0 }
     /^    [0-9]/ {
       ip = $1
@@ -214,11 +234,8 @@ carrier_dns4() {
     index($0, "Interface names:") && index($0, "[" iface "]") && n > 0 {
       print saved[1]
       exit
-    }')
-  if [ -n "$ip" ]; then
-    echo "$now $up $ip" > "$cache"
-    echo "$ip"
-  fi
+    }
+  '
 }
 
 # Replace every port-53 DNAT on the USB iface with this one destination.
@@ -351,11 +368,7 @@ daemon_args() {
   if [ -n "$(phone_dns_mark)" ]; then
     dns=$ADDR
   else
-    dns=$(carrier_dns4)
-    if [ -z "$dns" ] && [ -f "$STATE" ]; then
-      dns=$(sed -n 's/.*--dns \([^ ]*\).*/\1/p' "$STATE")
-    fi
-    [ -n "$dns" ] || return 0
+    dns=$ADDR
   fi
   echo "--if $BRIDGE --ifindex $idx --addr $ADDR --start $DHCP_START --end $DHCP_END --dns $dns --prefix ${pref:-"-"} --mac $mac --leases /data/adb/br77/leases"
 }
