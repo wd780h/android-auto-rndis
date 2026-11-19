@@ -492,6 +492,10 @@ usb_auto() {
   case "$fn" in
     *rndis*|*ncm*)
       if gadget_carrier_down; then
+        # Carrier 0 before the host opens the data interface is normal.
+        # Resetting rndis then just breaks enumeration. Recover only a link
+        # that has already had a carrier.
+        [ -f /data/adb/br77/carrier-seen ] || return 0
         now=$(date +%s)
         since=0
         [ -f /data/adb/br77/carrier-down.ts ] && since=$(cat /data/adb/br77/carrier-down.ts)
@@ -504,12 +508,13 @@ usb_auto() {
           rm -f /data/adb/br77/carrier-down.ts
         fi
       else
+        echo 1 > /data/adb/br77/carrier-seen
         rm -f /data/adb/br77/carrier-down.ts
       fi
       return 0
       ;;
   esac
-  rm -f /data/adb/br77/carrier-down.ts
+  rm -f /data/adb/br77/carrier-down.ts /data/adb/br77/carrier-seen
   usb_kick "$fn" "not rndis"
 }
 
