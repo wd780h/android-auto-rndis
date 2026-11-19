@@ -9,6 +9,7 @@ fi
 # Keep restarting it so plug-in can still switch to rndis.
 if ! pgrep -f "$MODDIR/br77-keeper" >/dev/null 2>&1; then
   setsid sh -c '
+    trap "" HUP
     while true; do
       "$1/br77-loop.sh" "$1"
       echo "loop exit $? $(date)" >> /data/adb/br77/br77.log

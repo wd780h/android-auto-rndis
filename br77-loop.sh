@@ -16,6 +16,7 @@ if [ -f "$LOG" ]; then
   fi
 fi
 exec >>"$LOG" 2>&1
+trap '' HUP
 trap 'echo "loop signal $? $(date)"' EXIT
 echo "=== br77 start $(date) ==="
 
