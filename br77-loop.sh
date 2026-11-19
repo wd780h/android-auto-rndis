@@ -16,6 +16,7 @@ if [ -f "$LOG" ]; then
   fi
 fi
 exec >>"$LOG" 2>&1
+trap 'echo "loop signal $? $(date)"' EXIT
 echo "=== br77 start $(date) ==="
 
 if [ -f "$CFG" ]; then
